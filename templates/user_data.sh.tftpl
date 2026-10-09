@@ -1,0 +1,148 @@
+#!/bin/bash
+# =============================================================================
+# Instance bootstrap
+# -----------------------------------------------------------------------------
+# Container mode (github_repository set):
+#   1. Install Docker + git via dnf (needs NAT egress)
+#   2. Fetch the GitHub PAT from SSM Parameter Store at runtime
+#      — the token is NEVER written into this user-data blob
+#   3. Clone with git http.extraheader (PAT never stored in remotes)
+#   4. docker build && docker run, managed by systemd
+#
+# Demo mode (no repository): built-in Python status page
+# Re-run later via SSM:  sudo /usr/local/bin/deploy-app.sh
+# =============================================================================
+set -euo pipefail
+
+exec > >(tee -a /var/log/user-data.log) 2>&1
+
+PROJECT_NAME="${project_name}"
+ENVIRONMENT="${environment}"
+AWS_REGION="${aws_region}"
+WEB_LISTEN_PORT="${web_listen_port}"
+CONTAINER_PORT="${container_port}"
+GITHUB_REPOSITORY="${github_repository}"
+GITHUB_BRANCH="${github_branch}"
+GITHUB_PAT_PARAMETER="${github_pat_ssm_parameter_name}"
+DOCKERFILE_DIRECTORY="${dockerfile_directory}"
+CONTAINER_DEPLOY="${container_deploy}"
+
+APP_ROOT="/opt/app"
+IMAGE_NAME="webapp:local"
+CONTAINER_NAME="webapp"
+
+# deploy-app.sh is injected as a literal (not re-parsed) so bash $${} stays intact.
+cat > /usr/local/bin/deploy-app.sh <<'DEPLOY'
+${deploy_script}
+DEPLOY
+chmod 0755 /usr/local/bin/deploy-app.sh
+
+mkdir -p /etc/webapp
+cat > /etc/webapp/deploy.env <<EOF
+PROJECT_NAME="${project_name}"
+ENVIRONMENT="${environment}"
+AWS_REGION="${aws_region}"
+WEB_LISTEN_PORT="${web_listen_port}"
+CONTAINER_PORT="${container_port}"
+GITHUB_REPOSITORY="${github_repository}"
+GITHUB_BRANCH="${github_branch}"
+GITHUB_PAT_PARAMETER="${github_pat_ssm_parameter_name}"
+DOCKERFILE_DIRECTORY="${dockerfile_directory}"
+APP_ROOT="$${APP_ROOT}"
+IMAGE_NAME="$${IMAGE_NAME}"
+CONTAINER_NAME="$${CONTAINER_NAME}"
+EOF
+chmod 0640 /etc/webapp/deploy.env
+
+if [[ "$${CONTAINER_DEPLOY}" == "true" ]]; then
+  cat > /etc/systemd/system/webapp.service <<EOF
+[Unit]
+Description=Containerised web application (${project_name}/${environment})
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/deploy-app.sh
+ExecStop=/usr/bin/docker stop webapp
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now webapp.service
+  exit 0
+fi
+
+# -----------------------------------------------------------------------------
+# Demo fallback — no GitHub repo configured
+# -----------------------------------------------------------------------------
+TOKEN="$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")"
+IMDS="curl -fsS -H X-aws-ec2-metadata-token:$${TOKEN}"
+
+INSTANCE_ID="$$($IMDS http://169.254.169.254/latest/meta-data/instance-id || echo unknown)"
+AZ="$$($IMDS http://169.254.169.254/latest/meta-data/placement/availability-zone || echo unknown)"
+PRIVATE_IP="$$($IMDS http://169.254.169.254/latest/meta-data/local-ipv4 || echo unknown)"
+HOSTNAME="$$(hostname -f 2>/dev/null || hostname)"
+
+mkdir -p /var/www/html
+cat > /var/www/html/index.html <<EOF
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>${project_name} · ${environment}</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, sans-serif;
+           background:#0b1220; color:#e8eefc; display:flex; min-height:100vh;
+           align-items:center; justify-content:center; }
+    .card { background:#151d2e; border:1px solid #2a3a5a; border-radius:16px;
+            padding:32px 40px; max-width:640px; }
+    .badge { display:inline-block; background:#1f6feb; color:#fff; border-radius:999px;
+             padding:2px 10px; font-size:.75rem; }
+    dl { display:grid; grid-template-columns: 160px 1fr; gap:8px 16px; }
+    dt { color:#8ba3c7; } dd { margin:0; font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <span class="badge">${environment}</span>
+    <h1>🌐 ${project_name} (demo)</h1>
+    <p>Set <code>github_repository</code> to deploy a container from GitHub.</p>
+    <dl>
+      <dt>Instance</dt><dd>$${INSTANCE_ID}</dd>
+      <dt>Hostname</dt><dd>$${HOSTNAME}</dd>
+      <dt>AZ</dt><dd>$${AZ}</dd>
+      <dt>Private IP</dt><dd>$${PRIVATE_IP}</dd>
+    </dl>
+  </div>
+</body>
+</html>
+EOF
+cp /var/www/html/index.html /var/www/html/health
+
+cat > /etc/systemd/system/webapp.service <<EOF
+[Unit]
+Description=Demo web application (${project_name}/${environment})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/html
+ExecStart=/usr/bin/python3 -m http.server ${web_listen_port} --bind 0.0.0.0
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now webapp.service

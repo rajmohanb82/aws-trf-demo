@@ -1,0 +1,51 @@
+# ---------------------------------------------------------------------------
+# Terraform
+# ---------------------------------------------------------------------------
+.terraform/
+.terraform.tfstate.lock.info
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.tfplan
+*.tfplan.json
+tfplan
+tfplan-*
+*.zip
+
+# Local state (never commit). Remote S3 state is the production path.
+*.tfstate
+*.tfstate.*
+state/
+bootstrap/state/
+bootstrap/.terraform/
+
+# Variable files that may contain account-specific values
+terraform.tfvars
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Keep the example and environment baselines
+!terraform.tfvars.example
+!environments/*.tfvars
+
+# ---------------------------------------------------------------------------
+# Credentials & secrets
+# ---------------------------------------------------------------------------
+*.pem
+*.key
+.aws/
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# Editor / OS
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

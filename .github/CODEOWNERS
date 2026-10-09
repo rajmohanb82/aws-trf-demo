@@ -1,0 +1,6 @@
+# Multi-party review of infrastructure changes.
+# Uncomment and replace with GitHub usernames or a team (e.g. @your-org/platform).
+# Combined with GitHub Environment required-reviewers this is the human gate
+# before plan and apply.
+#
+# * @your-org/platform @your-org/security
